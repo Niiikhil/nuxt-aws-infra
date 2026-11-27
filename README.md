@@ -25,7 +25,9 @@ AWS_ACCOUNT_ID = 111111111111
 AWS_REGION     = us-east-1
 ```
 
-If your plan doesn't allow organization variables for private repos, set them on each repo instead.
+For a personal GitHub account (or a plan without organization variables for private repos), set them on each repo instead.
+
+> **New AWS accounts:** AWS may refuse to create CloudFront distributions until the account is verified (`AccessDenied: Your account must be verified before you can add new CloudFront resources`). Open a case at [AWS Support](https://console.aws.amazon.com/support/home#/) → *Account and billing*, paste that error, and re-run the deploy once AWS confirms. Basic support handles this for free.
 
 ## For every new Nuxt project
 
