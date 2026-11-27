@@ -9,6 +9,10 @@ Parameters:
     Type: String
     Description: GitHub organization or user whose repositories may deploy.
     AllowedPattern: "^[A-Za-z0-9-]+$"
+  GitHubOwnerId:
+    Type: String
+    AllowedPattern: "^[0-9]+$"
+    Description: Numeric ID of the GitHub owner (bootstrap.sh looks it up). Pins the newer immutable token format to this exact account.
   RepositoryPattern:
     Type: String
     Default: "*"
@@ -112,8 +116,14 @@ Resources:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
               # Only jobs that run in a GitHub *environment* (the deploy job
               # does). Pull requests and other workflows can't get in.
+              # GitHub issues two subject formats; repositories using the
+              # newer one include immutable owner/repo IDs:
+              #   repo:owner/repo:environment:dev
+              #   repo:owner@<owner id>/repo@<repo id>:environment:dev
               StringLike:
-                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOwner}/${RepositoryPattern}:environment:*"
+                token.actions.githubusercontent.com:sub:
+                  - !Sub "repo:${GitHubOwner}/${RepositoryPattern}:environment:*"
+                  - !Sub "repo:${GitHubOwner}@${GitHubOwnerId}/${RepositoryPattern}@*:environment:*"
       Policies:
         - PolicyName: deploy-static-sites
           PolicyDocument:

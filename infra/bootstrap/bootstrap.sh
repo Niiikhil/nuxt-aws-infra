@@ -31,8 +31,16 @@ template="$(dirname "$0")/aws-account.cfn.yml"
 account="$(aws sts get-caller-identity --query Account --output text)"
 echo "AWS account $account, region $region, stack $stack"
 
+# Numeric owner ID, for GitHub's immutable token subject format.
+if command -v gh >/dev/null 2>&1 && owner_id="$(gh api "users/$owner" --jq .id 2>/dev/null)"; then :; else
+  owner_id="$(curl -fsS "https://api.github.com/users/$owner" | sed -nE 's/^  "id": ([0-9]+),$/\1/p')"
+fi
+[[ "$owner_id" =~ ^[0-9]+$ ]] || { echo "Could not look up the GitHub ID of '$owner'." >&2; exit 1; }
+echo "GitHub owner $owner (id $owner_id)"
+
 params=(
   "GitHubOwner=$owner"
+  "GitHubOwnerId=$owner_id"
   "RepositoryPattern=$pattern"
   "ResourcePrefix=$prefix"
   "AllowDestroy=$allow_destroy"
