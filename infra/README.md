@@ -69,7 +69,7 @@ Settings can also go in `infra/env/<env>.tfvars` if you prefer them in code revi
 
 Before applying, every deploy checks the plan:
 - **Deleting or replacing** infrastructure is blocked. If you really mean it, set `ALLOW_DESTROY=true` on that environment for one run, then remove it.
-- **A second bucket or distribution** in an environment that already exists is blocked. This usually means `PROJECT_NAME` or the repo name changed. Set `ALLOW_NEW_SITE_RESOURCES=true` for one run if intended.
+- **Duplicates are blocked.** Before creating the bucket or the distribution, the deploy looks in AWS for one with the same name. If one exists but this environment doesn't manage it (for example it was made by hand, or the state was lost), the deploy stops and tells you the `TF_VAR_adopt` value that takes it over instead.
 
 The bucket and distribution also have Terraform `prevent_destroy`, and the deploy role is denied deleting them unless the bootstrap ran with `ALLOW_DESTROY=true`.
 

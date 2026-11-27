@@ -203,8 +203,6 @@ jobs:
           args=()
           if [ -f "env/${ENVIRONMENT}.tfvars" ]; then args+=("-var-file=env/${ENVIRONMENT}.tfvars"); fi
 
-          terraform state list > state-before.txt 2>/dev/null || : > state-before.txt
-
           set +e
           terraform plan -no-color -lock-timeout=10m -detailed-exitcode -out=tfplan "${args[@]}"
           code=$?
@@ -229,13 +227,15 @@ jobs:
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Guards against the two expensive mistakes. Override for one run by
-      # setting the GitHub variable on this environment, then remove it.
+      # Guards against the two expensive mistakes:
+      #  1. deleting/replacing live infrastructure
+      #  2. creating a bucket or distribution that already exists in AWS but
+      #     isn't in this environment's state (e.g. made by hand, or the state
+      #     was lost) -> adopt it instead of building a duplicate
       - name: Plan safety check
         working-directory: infra
         env:
           ALLOW_DESTROY: ${{ vars.ALLOW_DESTROY }}
-          ALLOW_NEW_SITE_RESOURCES: ${{ vars.ALLOW_NEW_SITE_RESOURCES }}
         run: |
           status=0
           destructive=$(jq -r '.resource_changes[]? | select(.change.actions | index("delete")) | "  - \(.address) [\(.change.actions | join(" -> "))]"' plan.json)
@@ -243,21 +243,25 @@ jobs:
             if [ "$ALLOW_DESTROY" = "true" ]; then
               echo "::warning::Deleting/replacing (ALLOW_DESTROY=true):"
             else
-              echo "::error title=Blocked::This deploy would delete or replace infrastructure. If intended, set ALLOW_DESTROY=true on the '$ENVIRONMENT' environment for one run."
+              echo "::error title=Blocked::This deploy would delete or replace infrastructure. If intended, set ALLOW_DESTROY=true on the '$ENVIRONMENT' environment for one run, then remove it."
               status=1
             fi
             echo "$destructive"
           fi
 
-          creates=$(jq -r '.resource_changes[]? | select(.change.actions == ["create"]) | select(.type == "aws_s3_bucket" or .type == "aws_cloudfront_distribution") | select(.change.importing == null) | "  - \(.address)"' plan.json)
-          if [ -n "$creates" ] && [ -s state-before.txt ]; then
-            if [ "$ALLOW_NEW_SITE_RESOURCES" = "true" ]; then
-              echo "::warning::Creating a new bucket/distribution (ALLOW_NEW_SITE_RESOURCES=true):"
-            else
-              echo "::error title=Blocked::'$ENVIRONMENT' already exists, but this deploy would create a NEW bucket or distribution (did PROJECT_NAME or the repo name change?). If intended, set ALLOW_NEW_SITE_RESOURCES=true for one run."
+          new_bucket=$(jq -r '.resource_changes[]? | select(.type == "aws_s3_bucket" and .change.actions == ["create"] and .change.importing == null) | .change.after.bucket' plan.json)
+          if [ -n "$new_bucket" ] && aws s3api head-bucket --bucket "$new_bucket" 2>/dev/null; then
+            echo "::error title=Already exists::Bucket $new_bucket already exists but isn't managed by this environment. Adopt it: set TF_VAR_adopt={\"bucket_name\":\"$new_bucket\"} on the '$ENVIRONMENT' environment."
+            status=1
+          fi
+
+          new_dist=$(jq -r '.resource_changes[]? | select(.type == "aws_cloudfront_distribution" and .change.actions == ["create"] and .change.importing == null) | .change.after.comment' plan.json)
+          if [ -n "$new_dist" ]; then
+            existing=$(aws cloudfront list-distributions --query "DistributionList.Items[?Comment=='$new_dist'].Id" --output text)
+            if [ -n "$existing" ] && [ "$existing" != "None" ]; then
+              echo "::error title=Already exists::CloudFront distribution '$new_dist' already exists ($existing) but isn't managed by this environment. Adopt it: set TF_VAR_adopt={\"distribution_id\":\"$existing\"} on the '$ENVIRONMENT' environment."
               status=1
             fi
-            echo "$creates"
           fi
           exit $status
 

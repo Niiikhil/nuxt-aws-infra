@@ -3,5 +3,4 @@
 *.tfstate.*
 tfplan
 plan.json
-state-before.txt
 crash.log
