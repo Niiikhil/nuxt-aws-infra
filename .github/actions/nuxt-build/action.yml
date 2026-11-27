@@ -42,11 +42,14 @@ runs:
     - name: Install dependencies
       shell: bash
       run: |
+        if [ ! -f package.json ]; then
+          echo "::error::No package.json in the repository root. Add your Nuxt app (and its lockfile) next to infra/."; exit 1
+        fi
         if [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile; echo "PM=pnpm" >> "$GITHUB_ENV"
         elif [ -f yarn.lock ] && [ -f .yarnrc.yml ]; then corepack enable && yarn install --immutable; echo "PM=yarn" >> "$GITHUB_ENV"
         elif [ -f yarn.lock ]; then yarn install --frozen-lockfile; echo "PM=yarn" >> "$GITHUB_ENV"
         elif [ -f package-lock.json ]; then npm ci; echo "PM=npm" >> "$GITHUB_ENV"
-        else echo "::error::No lockfile (pnpm-lock.yaml, yarn.lock or package-lock.json)."; exit 1
+        else echo "::error::No lockfile. Run npm install (or pnpm/yarn install) locally and commit the lockfile."; exit 1
         fi
 
     - name: Generate static site
