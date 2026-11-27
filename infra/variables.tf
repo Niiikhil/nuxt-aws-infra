@@ -37,7 +37,7 @@ variable "repository" {
 }
 
 variable "resource_prefix" {
-  description = "Prefix on every resource name. Must match ResourcePrefix in the bootstrap stack (the deploy role is limited to it)."
+  description = "Prefix for default resource names (when S3_BUCKET_NAME / RESOURCE_NAME aren't set) and the state bucket. Must match ResourcePrefix in the bootstrap stack."
   type        = string
   default     = "nuxt"
 }
@@ -111,7 +111,7 @@ variable "adopt" {
   description = <<-EOT
     Existing resources to take over instead of creating (see imports.tf).
     GitHub variable TF_VAR_adopt, e.g. {"distribution_id":"E123ABC"}.
-    An adopted bucket must also be named via TF_VAR_bucket_name.
+    An adopted bucket must also be named via S3_BUCKET_NAME.
   EOT
   type = object({
     bucket_name              = optional(string)
@@ -121,8 +121,28 @@ variable "adopt" {
   default = {}
 }
 
+# --- Names (GitHub environment variables S3_BUCKET_NAME / RESOURCE_NAME) -------
+# Set these BEFORE an environment's first deploy. Changing them later means
+# new resources, which the safety checks block (see README).
+
 variable "bucket_name" {
-  description = "Override the bucket name (only when adopting). Default: <prefix>-<project>-<env>-<account id>."
+  description = "S3 bucket name (GitHub variable S3_BUCKET_NAME). Globally unique across all AWS accounts. Default: <prefix>-<project>-<env>-<account id>."
   type        = string
   default     = null
+
+  validation {
+    condition     = var.bucket_name == null || can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.bucket_name))
+    error_message = "S3_BUCKET_NAME must be 3-63 characters: lowercase letters, digits, dots and hyphens, starting and ending with a letter or digit."
+  }
+}
+
+variable "resource_name" {
+  description = "Base name for the CloudFront function (<name>-viewer-request), access control (<name>-oac) and the distribution's comment/Name tag (GitHub variable RESOURCE_NAME). Default: <prefix>-<project>-<env>."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.resource_name == null || can(regex("^[a-zA-Z0-9][a-zA-Z0-9_-]{1,46}[a-zA-Z0-9]$", var.resource_name))
+    error_message = "RESOURCE_NAME must be 3-48 characters: letters, digits, hyphens and underscores."
+  }
 }

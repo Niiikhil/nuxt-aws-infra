@@ -14,17 +14,23 @@
 #   - Deploy role              nuxt-github-deploy
 #
 # Safe to re-run: an existing stack is updated, nothing is duplicated.
-# Optional env: RESOURCE_PREFIX (default nuxt), ALLOW_DESTROY (default false).
+# Optional env:
+#   NAME_PATTERN     bucket/function names the role may manage: "*" (default,
+#                    any name) or e.g. "mysite-*"
+#   RESOURCE_PREFIX  default nuxt (stack, role, state bucket, default names)
+#   ALLOW_DESTROY    default false
 set -euo pipefail
 
-[[ $# -ge 1 ]] || { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+[[ $# -ge 1 ]] || { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
 owner="$1"
 region="${2:-$(aws configure get region 2>/dev/null || true)}"
 region="${region:-us-east-1}"
 pattern="${3:-*}"
+export AWS_REGION="$region" AWS_DEFAULT_REGION="$region"
 prefix="${RESOURCE_PREFIX:-nuxt}"
 allow_destroy="${ALLOW_DESTROY:-false}"
+name_pattern="${NAME_PATTERN:-*}"
 stack="${prefix}-github-deploy"
 template="$(dirname "$0")/aws-account.cfn.yml"
 
@@ -43,6 +49,7 @@ params=(
   "GitHubOwnerId=$owner_id"
   "RepositoryPattern=$pattern"
   "ResourcePrefix=$prefix"
+  "ManagedNamePattern=$name_pattern"
   "AllowDestroy=$allow_destroy"
 )
 

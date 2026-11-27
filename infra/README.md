@@ -10,16 +10,33 @@ visitor ─► CloudFront ─► CloudFront Function ─► private S3 bucket
 
 ## What gets created (per environment)
 
-| Resource | Name |
-|---|---|
-| S3 bucket (private, encrypted, versioned, old files kept 30 days) | `nuxt-<project>-<env>-<account id>` |
-| Bucket policy (only this distribution can read; HTTPS only) | |
-| CloudFront Origin Access Control | `nuxt-<project>-<env>-oac` |
-| CloudFront Function (redirects, `index.html` rewrites) | `nuxt-<project>-<env>-viewer-request` |
-| CloudFront distribution | |
-| ACM certificate + Route 53 records, *only with a custom domain in Route 53* | |
+| Resource | Default name | Set your own with |
+|---|---|---|
+| S3 bucket (private, encrypted, versioned, old files kept 30 days) | `nuxt-<project>-<env>-<account id>` | `S3_BUCKET_NAME` |
+| CloudFront Function (redirects, `index.html` rewrites) | `nuxt-<project>-<env>-viewer-request` | `RESOURCE_NAME` → `<name>-viewer-request` |
+| CloudFront Origin Access Control | `nuxt-<project>-<env>-oac` | `RESOURCE_NAME` → `<name>-oac` |
+| CloudFront distribution (comment and `Name` tag; AWS assigns its ID) | `nuxt-<project>-<env>` | `RESOURCE_NAME` |
+| Bucket policy (only this distribution can read; HTTPS only) | | |
+| ACM certificate + Route 53 records, *only with a custom domain in Route 53* | | |
 
 `<project>` is the GitHub variable `PROJECT_NAME`, or else the repository name. Terraform state is stored at `<project>/<env>/terraform.tfstate` in the account's state bucket. That state is how re-running the pipeline updates resources instead of creating them again.
+
+### Naming each environment
+
+Set the names as variables on each **GitHub environment** (Settings → Environments → `dev` / `staging` / `production` → Environment variables), before that environment's first deploy:
+
+| Environment | `S3_BUCKET_NAME` | `RESOURCE_NAME` |
+|---|---|---|
+| `dev` | `mysite-dev-assets` | `mysite-dev` |
+| `staging` | `mysite-staging-assets` | `mysite-staging` |
+| `production` | `mysite-prod-assets` | `mysite-prod` |
+
+The environments appear in GitHub after their first deploy. You can also create them yourself first with **New environment**, using the exact names `dev`, `staging` and `production`.
+
+Rules:
+- **Bucket names** are global across *all* AWS accounts: 3–63 characters, lowercase letters, digits, `.` and `-`. If someone else already owns a name, the deploy stops and asks for another one.
+- **`RESOURCE_NAME`**: 3–48 characters, letters, digits, `-` and `_`.
+- **Renaming an existing environment** means new resources. Terraform's `prevent_destroy` stops the run before anything changes. To rename, follow "Removing an environment" below, then deploy again with the new names.
 
 ## Branches and environments
 
@@ -48,7 +65,9 @@ To change which branch deploys where, edit the `case` in the `resolve` job of `d
 
 | Variable | Example | Effect |
 |---|---|---|
-| `PROJECT_NAME` | `shop` | Resource and state names (default: the repo name) |
+| `PROJECT_NAME` | `shop` | Default resource names and the state path (default: the repo name) |
+| `S3_BUCKET_NAME` | `mysite-prod-assets` | This environment's bucket name (see "Naming each environment") |
+| `RESOURCE_NAME` | `mysite-prod` | Base name for this environment's CloudFront resources |
 | `DOMAIN_NAMES` | `example.com,www.example.com` | Custom domains |
 | `ROUTE53_ZONE_ID` | `Z0123456789ABC` | With `DOMAIN_NAMES`: certificate and DNS records are created for you |
 | `ACM_CERTIFICATE_ARN` | `arn:aws:acm:us-east-1:…` | With `DOMAIN_NAMES`, when DNS is elsewhere. Then CNAME the domain to the `distribution_domain_name` output shown in the deploy log |
@@ -77,10 +96,10 @@ The bucket and distribution also have Terraform `prevent_destroy`, and the deplo
 
 For a site that was created by hand, set these on its environment:
 ```
-TF_VAR_bucket_name = nuxt-old-bucket
-TF_VAR_adopt       = {"bucket_name":"nuxt-old-bucket","distribution_id":"E1234567890ABC"}
+S3_BUCKET_NAME     = old-bucket
+TF_VAR_adopt       = {"bucket_name":"old-bucket","distribution_id":"E1234567890ABC"}
 ```
-The deploy imports them instead of creating new ones. Read the plan in the run summary for what else changes. The bucket name must start with `nuxt-`, because the deploy role can only manage those buckets.
+The deploy imports them instead of creating new ones. Read the plan in the run summary for what else changes.
 
 ## Testing locally
 

@@ -14,7 +14,7 @@ infra/bootstrap/bootstrap.sh my-github-org us-east-1
 This creates a CloudFormation stack `nuxt-github-deploy` with:
 - **GitHub OIDC provider**, so GitHub can sign in without stored AWS keys. Reused if the account already has one.
 - **State bucket** `nuxt-tfstate-<account>-<region>`, where Terraform tracks what it created.
-- **Deploy role** `nuxt-github-deploy`. Only deploy jobs from `my-github-org`'s repos can use it, and it can only manage resources named `nuxt-*`.
+- **Deploy role** `nuxt-github-deploy`. Only deploy jobs from `my-github-org`'s repos can use it. By default it may manage S3 buckets and CloudFront functions of any name, so each environment can choose its own names. To restrict it, run with `NAME_PATTERN="mysite-*"`. Deleting buckets and distributions is always denied.
 
 Re-running it is safe; the stack is updated in place. To limit which repos can deploy, pass a third argument (`"web-*"`, or one repo name).
 
@@ -66,5 +66,5 @@ infra/
 
 - No AWS keys are stored anywhere. Each job gets temporary credentials through GitHub OIDC.
 - Only jobs running in a GitHub *environment* (the deploy job) can assume the role. Pull requests can't.
-- The role can't touch IAM. Its S3 and CloudFront Function access is limited to `nuxt-*` names. CloudFront distributions and certificates can't be limited by name, so any repo allowed by the bootstrap could change any distribution in the account. Keep unrelated teams in separate AWS accounts, or narrow the repository pattern.
+- The role can't touch IAM, and it can't delete buckets or distributions. With the default `NAME_PATTERN="*"` it can modify any S3 bucket and CloudFront resource in the account. Keep this account for your sites, or restrict it with `NAME_PATTERN`. CloudFront distributions and certificates can never be limited by name.
 - Add reviewers to each repo's `production` environment to require approval for production deploys.

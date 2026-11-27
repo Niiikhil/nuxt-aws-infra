@@ -162,3 +162,49 @@ run "invalid_project_is_rejected" {
 
   expect_failures = [var.project]
 }
+
+run "custom_names_per_environment" {
+  command = apply
+
+  variables {
+    bucket_name   = "mysite-prod-assets"
+    resource_name = "mysite-prod"
+  }
+
+  assert {
+    condition     = aws_s3_bucket.site.bucket == "mysite-prod-assets"
+    error_message = "S3_BUCKET_NAME should set the bucket name."
+  }
+  assert {
+    condition     = aws_cloudfront_function.viewer_request.name == "mysite-prod-viewer-request"
+    error_message = "RESOURCE_NAME should name the CloudFront function."
+  }
+  assert {
+    condition     = aws_cloudfront_origin_access_control.site.name == "mysite-prod-oac"
+    error_message = "RESOURCE_NAME should name the access control."
+  }
+  assert {
+    condition     = aws_cloudfront_distribution.site.comment == "mysite-prod" && aws_cloudfront_distribution.site.tags["Name"] == "mysite-prod"
+    error_message = "RESOURCE_NAME should label the distribution."
+  }
+}
+
+run "invalid_bucket_name_is_rejected" {
+  command = plan
+
+  variables {
+    bucket_name = "My_Bucket"
+  }
+
+  expect_failures = [var.bucket_name]
+}
+
+run "invalid_resource_name_is_rejected" {
+  command = plan
+
+  variables {
+    resource_name = "has spaces"
+  }
+
+  expect_failures = [var.resource_name]
+}

@@ -6,9 +6,7 @@
 #
 # Set the GitHub variable TF_VAR_adopt on that environment, e.g.
 #   {"bucket_name":"old-bucket","distribution_id":"E1234567890ABC"}
-# and TF_VAR_bucket_name = old-bucket. The deploy log then shows "to import".
-# The bucket name must start with the resource prefix ("nuxt-"), or the
-# deploy role won't be allowed to manage it.
+# and S3_BUCKET_NAME = old-bucket. The deploy log then shows "to import".
 
 import {
   for_each = var.adopt.bucket_name == null ? {} : { this = var.adopt.bucket_name }
