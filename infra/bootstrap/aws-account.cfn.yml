@@ -1,0 +1,209 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  One-time setup that lets GitHub Actions deploy static Nuxt sites into this
+  account: GitHub OIDC provider, Terraform state bucket, and the deploy role.
+  Deploy with infra/bootstrap/bootstrap.sh. Re-running is safe (stack update).
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Description: GitHub organization or user whose repositories may deploy.
+    AllowedPattern: "^[A-Za-z0-9-]+$"
+  RepositoryPattern:
+    Type: String
+    Default: "*"
+    Description: Which of the owner's repositories may deploy. "*" = all, "web-*" = names starting with web-, or one exact name.
+  ResourcePrefix:
+    Type: String
+    Default: nuxt
+    AllowedPattern: "^[a-z][a-z0-9-]{1,10}$"
+    Description: Every site resource is named <prefix>-...; the deploy role can only manage those.
+  CreateOIDCProvider:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: '"false" if this account already has the token.actions.githubusercontent.com provider (only one is allowed).'
+  AllowDestroy:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+    Description: '"true" lets pipelines delete buckets and distributions. Keep "false" in production accounts.'
+
+Conditions:
+  CreateOIDC: !Equals [!Ref CreateOIDCProvider, "true"]
+  DenyDestroy: !Equals [!Ref AllowDestroy, "false"]
+
+Resources:
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateOIDC
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  StateBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ResourcePrefix}-tfstate-${AWS::AccountId}-${AWS::Region}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      LifecycleConfiguration:
+        Rules:
+          - Id: keep-state-history
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+
+  StateBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StateBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt StateBucket.Arn
+              - !Sub "${StateBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ResourcePrefix}-github-deploy"
+      Description: !Sub "GitHub Actions deploys of static Nuxt sites (${GitHubOwner}/${RepositoryPattern})"
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRoleWithWebIdentity
+            Principal:
+              Federated: !If
+                - CreateOIDC
+                - !Ref GitHubOIDCProvider
+                - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              # Only jobs that run in a GitHub *environment* (the deploy job
+              # does). Pull requests and other workflows can't get in.
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOwner}/${RepositoryPattern}:environment:*"
+      Policies:
+        - PolicyName: deploy-static-sites
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Site buckets and the state bucket all start with the prefix.
+              - Sid: Buckets
+                Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:ListBucket
+                  - s3:GetBucket*
+                  - s3:PutBucket*
+                  - s3:DeleteBucketPolicy
+                  - s3:GetEncryptionConfiguration
+                  - s3:PutEncryptionConfiguration
+                  - s3:GetLifecycleConfiguration
+                  - s3:PutLifecycleConfiguration
+                  - s3:GetAccelerateConfiguration
+                  - s3:GetReplicationConfiguration
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${ResourcePrefix}-*"
+              - Sid: Objects
+                Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${ResourcePrefix}-*/*"
+              # Distributions and OACs have no name-based ARN, so "*".
+              - Sid: CloudFront
+                Effect: Allow
+                Action:
+                  - cloudfront:Get*
+                  - cloudfront:List*
+                  - cloudfront:Describe*
+                  - cloudfront:CreateDistribution
+                  - cloudfront:CreateDistributionWithTags
+                  - cloudfront:UpdateDistribution
+                  - cloudfront:TagResource
+                  - cloudfront:UntagResource
+                  - cloudfront:CreateOriginAccessControl
+                  - cloudfront:UpdateOriginAccessControl
+                  - cloudfront:DeleteOriginAccessControl
+                  - cloudfront:CreateInvalidation
+                Resource: "*"
+              - Sid: CloudFrontFunctions
+                Effect: Allow
+                Action:
+                  - cloudfront:CreateFunction
+                  - cloudfront:UpdateFunction
+                  - cloudfront:PublishFunction
+                  - cloudfront:DeleteFunction
+                Resource: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:function/${ResourcePrefix}-*"
+              - Sid: Certificates
+                Effect: Allow
+                Action:
+                  - acm:RequestCertificate
+                  - acm:DescribeCertificate
+                  - acm:GetCertificate
+                  - acm:ListCertificates
+                  - acm:ListTagsForCertificate
+                  - acm:AddTagsToCertificate
+                  - acm:RemoveTagsFromCertificate
+                  - acm:DeleteCertificate
+                Resource: "*"
+              - Sid: Dns
+                Effect: Allow
+                Action:
+                  - route53:GetHostedZone
+                  - route53:ListResourceRecordSets
+                  - route53:ChangeResourceRecordSets
+                  - route53:ListTagsForResource
+                Resource: !Sub "arn:${AWS::Partition}:route53:::hostedzone/*"
+              - Sid: DnsChangeStatus
+                Effect: Allow
+                Action: route53:GetChange
+                Resource: !Sub "arn:${AWS::Partition}:route53:::change/*"
+              - !If
+                - DenyDestroy
+                - Sid: DenyDestroy
+                  Effect: Deny
+                  Action: [s3:DeleteBucket, cloudfront:DeleteDistribution]
+                  Resource: "*"
+                - !Ref AWS::NoValue
+
+Outputs:
+  AccountId:
+    Description: GitHub variable AWS_ACCOUNT_ID
+    Value: !Ref AWS::AccountId
+  Region:
+    Description: GitHub variable AWS_REGION
+    Value: !Ref AWS::Region
+  DeployRoleArn:
+    Value: !GetAtt DeployRole.Arn
+  StateBucket:
+    Value: !Ref StateBucket

@@ -1,0 +1,64 @@
+name: nuxt-build
+description: Install dependencies and run `nuxi generate` into .output/public.
+
+inputs:
+  vars-json:
+    description: toJSON(vars). NUXT_* entries are exported to the build.
+    default: "{}"
+  secrets-json:
+    description: toJSON(secrets). NUXT_* entries are exported to the build.
+    default: "{}"
+
+runs:
+  using: composite
+  steps:
+    - name: Export NUXT_* variables and secrets
+      shell: bash
+      env:
+        VARS_JSON: ${{ inputs.vars-json }}
+        SECRETS_JSON: ${{ inputs.secrets-json }}
+      run: |
+        for j in "$VARS_JSON" "$SECRETS_JSON"; do
+          jq -r 'to_entries[] | select(.key | startswith("NUXT_")) | "\(.key)<<__NUXT_EOF__\n\(.value)\n__NUXT_EOF__"' <<<"$j" >> "$GITHUB_ENV"
+        done
+
+    - name: Pick Node version
+      id: node
+      shell: bash
+      env:
+        NODE_VERSION: ${{ fromJSON(inputs.vars-json).NODE_VERSION }}
+      run: |
+        if [ -n "$NODE_VERSION" ]; then echo "version=$NODE_VERSION" >> "$GITHUB_OUTPUT"
+        elif [ -f .nvmrc ]; then echo "file=.nvmrc" >> "$GITHUB_OUTPUT"
+        elif [ -f .node-version ]; then echo "file=.node-version" >> "$GITHUB_OUTPUT"
+        else echo "version=22" >> "$GITHUB_OUTPUT"
+        fi
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ steps.node.outputs.version }}
+        node-version-file: ${{ steps.node.outputs.file }}
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        if [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile; echo "PM=pnpm" >> "$GITHUB_ENV"
+        elif [ -f yarn.lock ] && [ -f .yarnrc.yml ]; then corepack enable && yarn install --immutable; echo "PM=yarn" >> "$GITHUB_ENV"
+        elif [ -f yarn.lock ]; then yarn install --frozen-lockfile; echo "PM=yarn" >> "$GITHUB_ENV"
+        elif [ -f package-lock.json ]; then npm ci; echo "PM=npm" >> "$GITHUB_ENV"
+        else echo "::error::No lockfile (pnpm-lock.yaml, yarn.lock or package-lock.json)."; exit 1
+        fi
+
+    - name: Generate static site
+      shell: bash
+      env:
+        BUILD_COMMAND: ${{ fromJSON(inputs.vars-json).BUILD_COMMAND }}
+      run: |
+        if [ -n "$BUILD_COMMAND" ]; then
+          eval "$BUILD_COMMAND"
+        elif jq -e '.scripts.generate' package.json >/dev/null; then
+          "$PM" run generate
+        else
+          npx nuxi generate
+        fi
+        [ -f .output/public/index.html ] || { echo "::error::.output/public/index.html not found. The site must be static: use \`nuxi generate\` (or nitro preset 'static')."; exit 1; }

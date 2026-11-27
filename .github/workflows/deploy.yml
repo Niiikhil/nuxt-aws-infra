@@ -1,0 +1,302 @@
+# Builds this Nuxt site, creates/updates its AWS infrastructure (infra/), and
+# deploys it. Needs only two GitHub variables (org or repo level):
+#   AWS_ACCOUNT_ID, AWS_REGION        (printed by infra/bootstrap/bootstrap.sh)
+#
+#   pull request       -> build + Terraform checks (no AWS access)
+#   push to develop    -> deploy "dev"
+#   push to staging    -> deploy "staging"
+#   push to main       -> deploy "production"
+#   manual run         -> deploy the chosen environment
+#
+# Change the branch -> environment mapping in the "resolve" job below.
+# Everything else is optional; see infra/README.md.
+name: deploy
+
+on:
+  pull_request:
+  push:
+    branches: [main, staging, develop]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy
+        type: choice
+        options: [dev, staging, production]
+
+permissions:
+  contents: read
+
+env:
+  TERRAFORM_VERSION: 1.15.8
+
+jobs:
+  # ---------------------------------------------------------------------------
+  check:
+    name: build + terraform checks
+    # Skipped in the template repository itself; runs in repos created from it.
+    if: github.event_name == 'pull_request' && !github.event.repository.is_template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform fmt / validate / test
+        working-directory: infra
+        run: |
+          terraform fmt -check -recursive -diff
+          terraform init -backend=false -input=false >/dev/null
+          terraform validate -no-color
+          terraform test -no-color
+
+      - uses: ./.github/actions/nuxt-build
+        with:
+          vars-json: ${{ toJSON(vars) }}
+
+  # ---------------------------------------------------------------------------
+  resolve:
+    if: github.event_name != 'pull_request' && !github.event.repository.is_template
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.r.outputs.environment }}
+      project: ${{ steps.r.outputs.project }}
+    steps:
+      - id: r
+        env:
+          INPUT_ENV: ${{ inputs.environment }}
+          PROJECT_NAME: ${{ vars.PROJECT_NAME }}
+        run: |
+          if [ -n "$INPUT_ENV" ]; then
+            env="$INPUT_ENV"
+          else
+            case "$GITHUB_REF_NAME" in
+              main)          env=production ;;
+              staging)       env=staging ;;
+              develop | dev) env=dev ;;
+              *) echo "::error::No environment mapped for branch $GITHUB_REF_NAME"; exit 1 ;;
+            esac
+          fi
+
+          # Project slug: PROJECT_NAME, else the repository name, made safe
+          # for AWS resource names (lowercase, a-z0-9-, max 24 chars).
+          raw="${PROJECT_NAME:-${GITHUB_REPOSITORY#*/}}"
+          project=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//' | cut -c1-24 | sed -E 's/-+$//')
+
+          echo "environment=$env" >> "$GITHUB_OUTPUT"
+          echo "project=$project" >> "$GITHUB_OUTPUT"
+          echo "Deploying **$project** to **$env**" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: deploy (${{ needs.resolve.outputs.environment }})
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write # lets the job sign in to AWS via OIDC
+    # GitHub creates this environment automatically on first use. Add
+    # required reviewers to "production" in Settings > Environments to make
+    # production deploys wait for approval.
+    environment:
+      name: ${{ needs.resolve.outputs.environment }}
+      url: ${{ steps.tf.outputs.site_url }}
+    concurrency:
+      group: deploy-${{ needs.resolve.outputs.environment }}
+      cancel-in-progress: false
+    env:
+      PROJECT: ${{ needs.resolve.outputs.project }}
+      ENVIRONMENT: ${{ needs.resolve.outputs.environment }}
+      PREFIX: ${{ vars.RESOURCE_PREFIX || 'nuxt' }}
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check GitHub variables
+        env:
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          missing=
+          for v in AWS_ACCOUNT_ID AWS_REGION; do [ -n "${!v}" ] || missing="$missing $v"; done
+          [ -z "$missing" ] || { echo "::error::Set GitHub variable(s):$missing (org, repo or '$ENVIRONMENT' environment level). Values come from infra/bootstrap/bootstrap.sh."; exit 1; }
+
+      # Build first: a broken build stops before any infrastructure changes.
+      - uses: ./.github/actions/nuxt-build
+        with:
+          vars-json: ${{ toJSON(vars) }}
+          secrets-json: ${{ toJSON(secrets) }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN || format('arn:aws:iam::{0}:role/{1}-github-deploy', vars.AWS_ACCOUNT_ID, vars.RESOURCE_PREFIX || 'nuxt') }}
+          role-session-name: ${{ needs.resolve.outputs.project }}-${{ needs.resolve.outputs.environment }}-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform inputs from GitHub variables
+        env:
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          DOMAIN_NAMES: ${{ vars.DOMAIN_NAMES }}
+          ROUTE53_ZONE_ID: ${{ vars.ROUTE53_ZONE_ID }}
+          ACM_CERTIFICATE_ARN: ${{ vars.ACM_CERTIFICATE_ARN }}
+          SPA_MODE: ${{ vars.SPA_MODE }}
+          REDIRECTS: ${{ vars.REDIRECTS }}
+          PRICE_CLASS: ${{ vars.PRICE_CLASS }}
+          WEB_ACL_ID: ${{ vars.WEB_ACL_ID }}
+          VARS_JSON: ${{ toJSON(vars) }}
+        run: |
+          put() { printf '%s<<__TFVAR_EOF__\n%s\n__TFVAR_EOF__\n' "$1" "$2" >> "$GITHUB_ENV"; }
+
+          put TF_VAR_project "$PROJECT"
+          put TF_VAR_environment "$ENVIRONMENT"
+          put TF_VAR_aws_account_id "$AWS_ACCOUNT_ID"
+          put TF_VAR_aws_region "$AWS_REGION"
+          put TF_VAR_repository "$GITHUB_REPOSITORY"
+          put TF_VAR_resource_prefix "$PREFIX"
+
+          if [ -n "$DOMAIN_NAMES" ]; then
+            put TF_VAR_domain_names "$(jq -cn --arg s "$DOMAIN_NAMES" '$s | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')"
+          fi
+          if [ -n "$ROUTE53_ZONE_ID" ];     then put TF_VAR_route53_zone_id "$ROUTE53_ZONE_ID"; fi
+          if [ -n "$ACM_CERTIFICATE_ARN" ]; then put TF_VAR_acm_certificate_arn "$ACM_CERTIFICATE_ARN"; fi
+          if [ -n "$SPA_MODE" ];            then put TF_VAR_spa_mode "$SPA_MODE"; fi
+          if [ -n "$PRICE_CLASS" ];         then put TF_VAR_price_class "$PRICE_CLASS"; fi
+          if [ -n "$WEB_ACL_ID" ];          then put TF_VAR_web_acl_id "$WEB_ACL_ID"; fi
+          if [ -n "$REDIRECTS" ]; then
+            jq -e 'type == "object"' >/dev/null <<<"$REDIRECTS" || { echo "::error::REDIRECTS must be a JSON object, e.g. {\"/old\":\"/new\"}"; exit 1; }
+            put TF_VAR_redirects "$REDIRECTS"
+          fi
+
+          # Any other TF_VAR_* GitHub variable is passed through as-is.
+          jq -r 'to_entries[] | select(.key | startswith("TF_VAR_")) | "\(.key)<<__TFVAR_EOF__\n\(.value)\n__TFVAR_EOF__"' <<<"$VARS_JSON" >> "$GITHUB_ENV"
+
+      - name: Terraform init
+        working-directory: infra
+        env:
+          STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+        run: |
+          bucket="${PREFIX}-tfstate-${AWS_ACCOUNT_ID}-${STATE_REGION}"
+          if ! aws s3api head-bucket --bucket "$bucket" --region "$STATE_REGION" 2>/dev/null; then
+            echo "::error::State bucket $bucket not found. Run infra/bootstrap/bootstrap.sh once for this AWS account and region."
+            exit 1
+          fi
+          terraform init \
+            -backend-config="bucket=$bucket" \
+            -backend-config="region=$STATE_REGION" \
+            -backend-config="key=${PROJECT}/${ENVIRONMENT}/terraform.tfstate"
+
+      - name: Terraform plan
+        id: plan
+        working-directory: infra
+        run: |
+          args=()
+          if [ -f "env/${ENVIRONMENT}.tfvars" ]; then args+=("-var-file=env/${ENVIRONMENT}.tfvars"); fi
+
+          terraform state list > state-before.txt 2>/dev/null || : > state-before.txt
+
+          set +e
+          terraform plan -no-color -lock-timeout=10m -detailed-exitcode -out=tfplan "${args[@]}"
+          code=$?
+          set -e
+          [ $code -eq 0 ] || [ $code -eq 2 ] || exit $code
+          echo "changes=$([ $code -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+          terraform show -json tfplan > plan.json
+          count() { jq "[.resource_changes[]? | select($1)] | length" plan.json; }
+          {
+            echo "### Infrastructure ($ENVIRONMENT)"
+            echo
+            echo "| Import | Create | Update | Delete/replace |"
+            echo "|---:|---:|---:|---:|"
+            echo "| $(count '.change.importing != null') | $(count '.change.actions == ["create"]') | $(count '.change.actions == ["update"]') | $(count '.change.actions | index("delete")') |"
+            echo
+            echo "<details><summary>Plan</summary>"
+            echo
+            echo '```'
+            terraform show -no-color tfplan | head -c 60000
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Guards against the two expensive mistakes. Override for one run by
+      # setting the GitHub variable on this environment, then remove it.
+      - name: Plan safety check
+        working-directory: infra
+        env:
+          ALLOW_DESTROY: ${{ vars.ALLOW_DESTROY }}
+          ALLOW_NEW_SITE_RESOURCES: ${{ vars.ALLOW_NEW_SITE_RESOURCES }}
+        run: |
+          status=0
+          destructive=$(jq -r '.resource_changes[]? | select(.change.actions | index("delete")) | "  - \(.address) [\(.change.actions | join(" -> "))]"' plan.json)
+          if [ -n "$destructive" ]; then
+            if [ "$ALLOW_DESTROY" = "true" ]; then
+              echo "::warning::Deleting/replacing (ALLOW_DESTROY=true):"
+            else
+              echo "::error title=Blocked::This deploy would delete or replace infrastructure. If intended, set ALLOW_DESTROY=true on the '$ENVIRONMENT' environment for one run."
+              status=1
+            fi
+            echo "$destructive"
+          fi
+
+          creates=$(jq -r '.resource_changes[]? | select(.change.actions == ["create"]) | select(.type == "aws_s3_bucket" or .type == "aws_cloudfront_distribution") | select(.change.importing == null) | "  - \(.address)"' plan.json)
+          if [ -n "$creates" ] && [ -s state-before.txt ]; then
+            if [ "$ALLOW_NEW_SITE_RESOURCES" = "true" ]; then
+              echo "::warning::Creating a new bucket/distribution (ALLOW_NEW_SITE_RESOURCES=true):"
+            else
+              echo "::error title=Blocked::'$ENVIRONMENT' already exists, but this deploy would create a NEW bucket or distribution (did PROJECT_NAME or the repo name change?). If intended, set ALLOW_NEW_SITE_RESOURCES=true for one run."
+              status=1
+            fi
+            echo "$creates"
+          fi
+          exit $status
+
+      - name: Terraform apply
+        if: steps.plan.outputs.changes == 'true'
+        working-directory: infra
+        run: terraform apply -no-color -lock-timeout=10m -auto-approve tfplan
+
+      - name: Read outputs
+        id: tf
+        working-directory: infra
+        run: |
+          out=$(terraform output -json)
+          for k in bucket_name distribution_id site_url; do
+            echo "$k=$(jq -r --arg k "$k" '.[$k].value' <<<"$out")" >> "$GITHUB_OUTPUT"
+          done
+
+      # New hashed assets first, then the HTML that references them, then
+      # remove old assets, so visitors never load HTML pointing at a missing file.
+      - name: Upload site
+        env:
+          BUCKET: ${{ steps.tf.outputs.bucket_name }}
+          OUT: .output/public
+          ASSETS: ${{ vars.NUXT_ASSETS_DIR || '_nuxt' }}
+        run: |
+          immutable="public,max-age=31536000,immutable"
+          if [ -d "$OUT/$ASSETS" ]; then
+            aws s3 sync "$OUT/$ASSETS" "s3://$BUCKET/$ASSETS" --cache-control "$immutable" --no-progress
+          fi
+          aws s3 sync "$OUT" "s3://$BUCKET" --exclude "$ASSETS/*" \
+            --cache-control "public,max-age=0,must-revalidate" --delete --no-progress
+          if [ -d "$OUT/$ASSETS" ]; then
+            aws s3 sync "$OUT/$ASSETS" "s3://$BUCKET/$ASSETS" --cache-control "$immutable" --delete --no-progress
+          fi
+
+      - name: Invalidate CloudFront
+        env:
+          DISTRIBUTION_ID: ${{ steps.tf.outputs.distribution_id }}
+          SITE_URL: ${{ steps.tf.outputs.site_url }}
+        run: |
+          aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" --paths '/*' --query 'Invalidation.Id' --output text
+          echo "### Live: $SITE_URL" >> "$GITHUB_STEP_SUMMARY"
