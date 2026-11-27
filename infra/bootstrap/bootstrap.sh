@@ -61,8 +61,9 @@ aws cloudformation deploy \
 
 cat <<EOF
 
-Done. Set these GitHub variables, once, at the organization level
-(github.com/organizations/$owner/settings/variables/actions) or per repository:
+Done. Set these GitHub Actions variables on each repository
+(Settings > Secrets and variables > Actions > Variables). For a GitHub
+organization you can set them once at the org level instead:
 
   AWS_ACCOUNT_ID = $account
   AWS_REGION     = $region
