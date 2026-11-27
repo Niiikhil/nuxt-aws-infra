@@ -73,8 +73,8 @@ To change which branch deploys where, edit the `case` in the `resolve` job of `d
 | `ACM_CERTIFICATE_ARN` | `arn:aws:acm:us-east-1:…` | With `DOMAIN_NAMES`, when DNS is elsewhere. Then CNAME the domain to the `distribution_domain_name` output shown in the deploy log |
 | `SPA_MODE` | `true` | For `ssr: false` apps |
 | `REDIRECTS` | `{"/old":"/new"}` | 301 redirects. The query string is dropped |
-| `PRICE_CLASS` | `PriceClass_All` | Edge locations (default: North America and Europe) |
-| `WEB_ACL_ID` | `arn:aws:wafv2:us-east-1:…` | Attach a WAF |
+| `PRICE_CLASS` | `PriceClass_All` | Edge locations (default: North America and Europe). Applied at creation only |
+| `WEB_ACL_ID` | `arn:aws:wafv2:us-east-1:…` | Attach a WAF. Applied at creation only |
 | `NODE_VERSION` | `22` | Default: `.nvmrc` / `.node-version`, else 22 |
 | `BUILD_COMMAND` | `pnpm run generate` | Default: the `generate` script, else `npx nuxi generate` |
 | `NUXT_*` (variables or secrets) | `NUXT_PUBLIC_API_BASE` | Passed to the build |
@@ -83,6 +83,10 @@ To change which branch deploys where, edit the `case` in the `resolve` job of `d
 Typical setup: on the `production` environment, set `DOMAIN_NAMES=example.com,www.example.com` and `ROUTE53_ZONE_ID=Z…`. Leave dev without a domain, and it gets a `*.cloudfront.net` URL.
 
 Settings can also go in `infra/env/<env>.tfvars` if you prefer them in code review. A tfvars file wins over GitHub variables.
+
+## CloudFront pricing plans
+
+You can put a distribution on a CloudFront flat-rate pricing plan (including the Free plan) from the CloudFront console. The plan attaches its own WAF web ACL and sets the price class. The pipeline leaves both alone after creation, so deploys keep working on a distribution with a plan.
 
 ## Safety checks
 

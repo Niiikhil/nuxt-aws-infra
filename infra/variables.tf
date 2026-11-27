@@ -78,13 +78,13 @@ variable "redirects" {
 }
 
 variable "price_class" {
-  description = "GitHub variable PRICE_CLASS: PriceClass_100 (NA/EU), PriceClass_200, PriceClass_All."
+  description = "GitHub variable PRICE_CLASS: PriceClass_100 (NA/EU), PriceClass_200, PriceClass_All. Applied when the distribution is created; change it later in the console (or via a pricing plan)."
   type        = string
   default     = "PriceClass_100"
 }
 
 variable "web_acl_id" {
-  description = "GitHub variable WEB_ACL_ID: a CLOUDFRONT-scope WAF ACL ARN."
+  description = "GitHub variable WEB_ACL_ID: a CLOUDFRONT-scope WAF ACL ARN. Applied when the distribution is created; afterwards manage it in the console (pricing plans attach their own)."
   type        = string
   default     = null
 }

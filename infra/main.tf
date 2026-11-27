@@ -173,6 +173,12 @@ resource "aws_cloudfront_distribution" "site" {
   lifecycle {
     prevent_destroy = true
 
+    # A CloudFront pricing plan (e.g. the flat-rate Free plan, chosen in the
+    # console) attaches its own web ACL and sets the price class, and AWS
+    # refuses to remove that web ACL. These two are therefore applied when
+    # the distribution is created and left alone afterwards.
+    ignore_changes = [web_acl_id, price_class]
+
     precondition {
       condition     = length(var.domain_names) == 0 || local.certificate_arn != null
       error_message = "DOMAIN_NAMES needs ROUTE53_ZONE_ID (certificate created for you) or ACM_CERTIFICATE_ARN (existing us-east-1 certificate)."
